@@ -27,7 +27,7 @@ torch.set_float32_matmul_precision('high')
 @dataclass
 class TrainConfig:
     compression_factor: float = 10.0
-    max_epochs: int = 201
+    max_epochs: int = 101
     logging_rate: int = 20
     sample_prop: float = 0.1
     # Component-specific learning rates
@@ -36,13 +36,13 @@ class TrainConfig:
     lr_L_diag: float = 1e-1
     lr_L_offdiag: float = 1e-1
     # Scheduler configuration
-    scheduler_type: str = 'linear'  # Options: 'cosine', 'exponential', 'linear'
-    scheduler_eta_min: float = 1e-6
+    scheduler_type: str = 'cosine'  # Options: 'cosine', 'exponential', 'linear'
+    scheduler_eta_min: float = 1e-1
     scheduler_gamma: float = 0.9857  # Used for 'exponential' and 'step'
     knn_type: str = 'structured_voronoi'  # 'knn', 'voronoi', 'structured_voronoi'
     knn_update_rate: int = 50
     K: int = 24
-    k_graph: int = 15  # Number of neighbors for the Gaussian-to-Gaussian PyG graph
+    k_graph: int = 15  # NEW: Number of neighbors for the Gaussian-to-Gaussian PyG graph
     K_candidates: int = 300  # For structured component
     deform_control_points_per_dim: Tuple[int, int, int] = (20, 20, 20)  # For structured component
     voronoi_nlist: int = 1024  # Ideally should be ~sqrt(centroids). For voronoi component
@@ -59,13 +59,6 @@ def fused_mahalanobis_distance_nd(precision_matrices_nk: torch.Tensor, x_minus_m
     Computes the squared Mahalanobis distance v^T Lambda v for each (point, Gaussian) pair.
     Compiled to fuse operations in memory, avoiding explicit intermediate allocations.
     Automatically generalizes to any dimensionality D.
-
-    Args:
-        precision_matrices_nk (torch.Tensor): Precision matrices Lambda. Expected shape: (N, K, D, D).
-        x_minus_mu_nk (torch.Tensor): Centred coordinates (x - mu). Expected shape: (N, K, D).
-
-    Returns:
-        torch.Tensor: Squared distances. Expected shape: (N, K).
     """
     M_v = torch.einsum('nkij,nkj->nki', precision_matrices_nk, x_minus_mu_nk)
     return torch.sum(x_minus_mu_nk * M_v, dim=2)
@@ -126,6 +119,7 @@ class GaussianIntensityField(nn.Module):
         num_off_diagonals = (self.D * (self.D - 1)) // 2
         self.L_offdiag = nn.Parameter(torch.zeros((num_gaussians, num_off_diagonals)))
 
+        # Softplus unconstrained formulation
         self.raw_intensities = nn.Parameter(torch.zeros((num_gaussians, self.out_dim)))
 
     @property
@@ -154,18 +148,18 @@ class GaussianIntensityField(nn.Module):
     def forward(self, coords: torch.Tensor, top_k_idcs: torch.Tensor) -> torch.Tensor:
         precisions_all = self.get_precision_matrices()
 
-        mus_local = self.mus[top_k_idcs]
-        precisions_local = precisions_all[top_k_idcs]
+        mus_local = self.mus[top_k_idcs]  # (N, K, D)
+        precisions_local = precisions_all[top_k_idcs]  # (N, K, D, D)
 
-        intensities_local = self.intensities[top_k_idcs]
-        x_minus_mu = coords.unsqueeze(1) - mus_local
+        intensities_local = self.intensities[top_k_idcs]  # (N, K, out_dim)
+        x_minus_mu = coords.unsqueeze(1) - mus_local  # (N, K, D)
 
-        inner_term = fused_mahalanobis_distance_nd(precisions_local, x_minus_mu)
+        inner_term = fused_mahalanobis_distance_nd(precisions_local, x_minus_mu)  # (N, K)
 
-        weights = torch.exp(-0.5 * inner_term)
+        weights = torch.exp(-0.5 * inner_term)  # (N, K)
         weights = weights / (weights.sum(-1, keepdim=True) + 1e-6)
 
-        out = torch.sum(weights.unsqueeze(-1) * intensities_local, dim=1)
+        out = torch.sum(weights.unsqueeze(-1) * intensities_local, dim=1)  # (N, out_dim)
         return out
 
     def initialize_parameters_from_image(self, images: torch.Tensor) -> None:
@@ -178,11 +172,13 @@ class GaussianIntensityField(nn.Module):
         if self.D != D_spat:
             raise ValueError(f"Model spatial dimension ({self.D}) does not match image spatial dimensions ({D_spat}).")
 
+        # 1. Gradient and Intensity Maps
         grads = torch.gradient(images, dim=list(range(1, images.ndim)))
         grad_tensor = torch.stack(grads, dim=-1)
         grad_mag = torch.linalg.norm(grad_tensor, dim=-1).mean(dim=0)
         img_mag = images.mean(dim=0)
 
+        # 2. Mixed Probability Sampling
         grad_prob = grad_mag / (grad_mag.sum() + 1e-8)
         img_prob = img_mag / (img_mag.sum() + 1e-8)
 
@@ -209,6 +205,7 @@ class GaussianIntensityField(nn.Module):
         max_grad = grad_mag.max() + 1e-8
         norm_mag = (sampled_grad_mag / max_grad).clamp(0.0, 1.0)
 
+        # 3. K-Nearest Neighbors for Adaptive Base Scaling
         mus_np = sampled_coords.cpu().numpy().astype(np.float32)
         cpu_index = faiss.IndexFlatL2(D_spat)
 
@@ -222,8 +219,9 @@ class GaussianIntensityField(nn.Module):
         D_knn, _ = index.search(mus_np, 4)
         mean_sq_dist = torch.tensor(D_knn[:, 1:]).mean(dim=1, dtype=torch.float32).to(device)
         base_scale = torch.sqrt(mean_sq_dist).clamp(min=self.min_spatial_scale, max=self.max_spatial_scale)
-        base_scale = base_scale.unsqueeze(-1)
+        base_scale = base_scale.unsqueeze(-1)  # (N, 1)
 
+        # 4. Adaptive Anisotropy based on Structure
         scale_along_grad = base_scale * (1.0 - 0.8 * norm_mag)
         scale_ortho = base_scale * (1.0 + 0.5 * norm_mag)
 
@@ -309,6 +307,12 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
     Returns:
         float: The final full-volume reconstruction PSNR (in dB).
     """
+    # Start timer at the very beginning to include initialization
+    t0 = time.time()
+
+    # Initialize from image happens inside training routine now
+    gs.initialize_parameters_from_image(img_tensor)
+
     spatial_shape = img_tensor.shape[1:]
 
     grid_axes = [torch.arange(s, device=device) for s in spatial_shape]
@@ -372,7 +376,6 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
     scaler = torch.amp.GradScaler('cuda')
     loss_fn = torch.nn.MSELoss()
 
-    t0 = time.time()
     loss = torch.full((1,), 0.0)
 
     epochs_list = []
@@ -457,7 +460,7 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
                 fig.savefig(run_dir / 'metrics_plot.png')
                 plt.close(fig)
 
-    print("Training complete.")
+    print(f"Training complete in {time.time() - t0:.2f}s.")
 
     # Unconditional Final PSNR Calculation (Guaranteed to execute on optimized weights)
     mse_sum = 0.0
@@ -488,17 +491,6 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
 
 
 def load_nifti_as_tensor(file_path: Union[str, Path], squeeze_dims: bool = True) -> torch.Tensor:
-    """
-    Reads a NIfTI volume image and converts it to a PyTorch tensor.
-
-    Args:
-        file_path (Union[str, Path]): The absolute or relative path to the .nii or .nii.gz file.
-        squeeze_dims (bool): Whether to drop singleton dimensions initially.
-
-    Returns:
-        torch.Tensor: The volumetric image data as a 32-bit float tensor.
-            Expected shape: (C, Z, Y, X). For single-channel volumes, C=1.
-    """
     img_array = nib.load(str(file_path)).get_fdata()
     img_array = np.transpose(img_array)
     img_tensor = torch.tensor(img_array, dtype=torch.float32)
@@ -552,7 +544,6 @@ def process_oasis_dataset(oasis_dir: Path, results_dir: Path, device: torch.devi
             min_spatial_scale=cfg.min_spatial_scale,
             max_spatial_scale=cfg.max_spatial_scale
         ).to(device)
-        gs.initialize_parameters_from_image(img_tensor)
 
         print(f"Image shape: {img_tensor.shape}, num voxels: {num_voxels}")
         print(f"Original Params: {original_params} -> Gaussians Params: {num_gaussians * params_per_gaussian}")
@@ -590,4 +581,4 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"OASIS dataset path does not exist: {oasis_path}")
 
     # Set enable_logging=False here to train optimally without drawing or saving volume visualizations
-    process_oasis_dataset(oasis_path, results_path, device, enable_logging=False)
+    process_oasis_dataset(oasis_path, results_path, device, enable_logging=True)
