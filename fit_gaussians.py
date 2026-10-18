@@ -28,7 +28,7 @@ torch.set_float32_matmul_precision('high')
 class TrainConfig:
     compression_factor: float = 10.0
     max_epochs: int = 201
-    logging_rate: int = 100
+    logging_rate: int = 20
     sample_prop: float = 0.1
     # Component-specific learning rates
     lr_mus: float = 1e-1
@@ -39,7 +39,6 @@ class TrainConfig:
     scheduler_type: str = 'linear'  # Options: 'cosine', 'exponential', 'linear'
     scheduler_eta_min: float = 1e-6
     scheduler_gamma: float = 0.9857  # Used for 'exponential' and 'step'
-    step_size: int = 100  # Used for 'step'
     knn_type: str = 'structured_voronoi'  # 'knn', 'voronoi', 'structured_voronoi'
     knn_update_rate: int = 50
     K: int = 24
