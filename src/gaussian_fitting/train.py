@@ -1,6 +1,7 @@
 import time
 import math
 import warnings
+import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ class TrainConfig:
     lr_L_diag: float = 1e-1
     lr_L_offdiag: float = 1e-1
     # Scheduler configuration
-    scheduler_type: str = 'cosine'  # Options: 'cosine', 'exponential', 'linear'
+    scheduler_type: str = 'linear'  # Options: 'cosine', 'exponential', 'linear'
     scheduler_eta_min: float = 1e-1
     scheduler_gamma: float = 0.9857  # Used for 'exponential' and 'step'
     knn_type: str = 'structured_voronoi'  # 'knn', 'voronoi', 'structured_voronoi'
@@ -299,79 +300,105 @@ def load_nifti_as_tensor(file_path: Union[str, Path], squeeze_dims: bool = True)
     return img_tensor
 
 
-def process_oasis_dataset(oasis_dir: Path, results_dir: Path, device: torch.device,
+def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.device,
                           enable_logging: bool = True) -> None:
-    for subject_path in tqdm.tqdm(list(oasis_dir.iterdir()), desc="Processing subjects"):
-        if not subject_path.is_dir():
+    splits = ['train', 'val', 'test']
+
+    for split in splits:
+        split_in_dir = dataset_dir / split
+        split_out_dir = results_dir / split
+
+        if not split_in_dir.exists() or not split_in_dir.is_dir():
+            print(f"\n--- Split directory not found, skipping: {split_in_dir} ---")
             continue
 
-        subject_id = subject_path.name
-        nii_file = subject_path / "aligned_orig.nii.gz"
+        print(f"\n========== Processing Split: {split} ==========")
+        split_out_dir.mkdir(parents=True, exist_ok=True)
 
-        if not nii_file.exists():
-            print(f"Skipping {subject_id}: 'aligned_orig.nii.gz' not found.")
-            continue
+        for subject_path in tqdm.tqdm(list(split_in_dir.iterdir()), desc=f"Processing {split} subjects"):
+            if not subject_path.is_dir():
+                continue
 
-        subject_out_dir = results_dir / subject_id
-        subject_out_dir.mkdir(parents=True, exist_ok=True)
+            subject_id = subject_path.name
+            nii_file = subject_path / "aligned_orig.nii.gz"
 
-        img_tensor = load_nifti_as_tensor(nii_file)
-        img_tensor = img_tensor.to(device)
+            if not nii_file.exists():
+                print(f"\nSkipping {subject_id}: 'aligned_orig.nii.gz' not found.")
+                continue
 
-        cfg = TrainConfig()
+            subject_out_dir = split_out_dir / subject_id
+            subject_out_dir.mkdir(parents=True, exist_ok=True)
 
-        spatial_shape = img_tensor.shape[1:]
-        num_channels = img_tensor.shape[0]
-        num_voxels = int(np.prod(spatial_shape))
+            img_tensor = load_nifti_as_tensor(nii_file)
+            img_tensor = img_tensor.to(device)
 
-        params_per_gaussian = GaussianIntensityField.params_per_gaussian(len(spatial_shape), num_channels)
-        original_params = num_voxels * num_channels
-        target_total_params = original_params / cfg.compression_factor
-        num_gaussians = max(1, int(target_total_params / params_per_gaussian))
+            cfg = TrainConfig()
 
-        gs = GaussianIntensityField(
-            num_gaussians=num_gaussians,
-            in_dim=len(spatial_shape),
-            out_dim=num_channels,
-            coord_bounds=(0, spatial_shape),
-            min_spatial_scale=cfg.min_spatial_scale,
-            max_spatial_scale=cfg.max_spatial_scale
-        ).to(device)
+            spatial_shape = img_tensor.shape[1:]
+            num_channels = img_tensor.shape[0]
+            num_voxels = int(np.prod(spatial_shape))
 
-        print(f"Image shape: {img_tensor.shape}, num voxels: {num_voxels}")
-        print(f"Original Params: {original_params} -> Gaussians Params: {num_gaussians * params_per_gaussian}")
-        print(f"Calculated Num gaussians: {gs.num_gaussians} for compression factor {cfg.compression_factor}")
+            params_per_gaussian = GaussianIntensityField.params_per_gaussian(len(spatial_shape), num_channels)
+            original_params = num_voxels * num_channels
+            target_total_params = original_params / cfg.compression_factor
+            num_gaussians = max(1, int(target_total_params / params_per_gaussian))
 
-        run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        run_dir = subject_out_dir / run_id
-        run_dir.mkdir(exist_ok=True, parents=True)
+            gs = GaussianIntensityField(
+                num_gaussians=num_gaussians,
+                in_dim=len(spatial_shape),
+                out_dim=num_channels,
+                coord_bounds=(0, spatial_shape),
+                min_spatial_scale=cfg.min_spatial_scale,
+                max_spatial_scale=cfg.max_spatial_scale
+            ).to(device)
 
-        final_psnr = train(run_dir, gs, img_tensor, cfg, device, enable_logging=enable_logging)
+            print(f"\nSubject: {subject_id}")
+            print(f"Image shape: {img_tensor.shape}, num voxels: {num_voxels}")
+            print(f"Original Params: {original_params} -> Gaussians Params: {num_gaussians * params_per_gaussian}")
+            print(f"Calculated Num gaussians: {gs.num_gaussians} for compression factor {cfg.compression_factor}")
 
-        # Print the final PSNR prior to storing representations as requested
-        print(f"Saving representations for {subject_id}. Final PSNR: {final_psnr:.2f} dB")
+            run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            run_dir = subject_out_dir / run_id
 
-        # Save standard representation state dict
-        param_save_path = subject_out_dir / "learned_params.pth"
-        torch.save(gs.state_dict(), param_save_path)
-        print(f"Saved learned parameters to: {param_save_path}")
+            if enable_logging:
+                run_dir.mkdir(exist_ok=True, parents=True)
 
-        # Extract and save PyG Graph Data
-        pyg_data = extract_pyg_data(gs, k_graph=cfg.k_graph, psnr=final_psnr)
-        pyg_save_path = subject_out_dir / "graph_data.pt"
-        torch.save(pyg_data, pyg_save_path)
-        print(f"Saved PyG graph data to: {pyg_save_path}")
+            final_psnr = train(run_dir, gs, img_tensor, cfg, device, enable_logging=enable_logging)
+
+            print(f"Saving representations for {subject_id}. Final PSNR: {final_psnr:.2f} dB")
+
+            # Save standard representation state dict
+            param_save_path = subject_out_dir / "learned_params.pth"
+            torch.save(gs.state_dict(), param_save_path)
+            print(f"Saved learned parameters to: {param_save_path}")
+
+            # Extract and save PyG Graph Data
+            pyg_data = extract_pyg_data(gs, k_graph=cfg.k_graph, psnr=final_psnr)
+            pyg_save_path = subject_out_dir / "graph_data.pt"
+            torch.save(pyg_data, pyg_save_path)
+            print(f"Saved PyG graph data to: {pyg_save_path}\n")
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Fit Gaussian Intensity Fields to OASIS dataset splits.")
+    parser.add_argument("--dataset_path", type=str, default="/vol/miltank/projects/L2R/OASIS_L2R",
+                        help="Path to the root of the dataset containing train, val, and test subdirectories.")
+    parser.add_argument("--output_path", type=str, default="/vol/miltank/projects/L2R/projects/OASIS_GAUSS_COMPRESS",
+                        help="Path to save the output representations, logs, and graphs.")
+    parser.add_argument("--enable_logging", action="store_true",
+                        help="Enable intermediate logging, plots, and volume visualization saving to speed up training.")
+
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on {device}...")
 
-    oasis_path = Path("/home/nil/data/OASIS/")
-    results_path = Path(r"./results/")
+    dataset_path = Path(args.dataset_path)
+    output_path = Path(args.output_path)
 
-    if not oasis_path.exists():
-        raise FileNotFoundError(f"OASIS dataset path does not exist: {oasis_path}")
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset root path does not exist: {dataset_path}")
 
-    # Set enable_logging=False here to train optimally without drawing or saving volume visualizations
-    process_oasis_dataset(oasis_path, results_path, device, enable_logging=True)
+    enable_logging = args.enable_logging
+
+    process_oasis_dataset(dataset_path, output_path, device, enable_logging=enable_logging)
