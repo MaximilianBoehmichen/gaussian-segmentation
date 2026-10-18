@@ -1,0 +1,36 @@
+[project]
+name = "gaussian-segmentation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "batchgenerators>=0.25.3",
+    "beartype==0.23.1",
+    "faiss-gpu-cuvs>=1.15.1",
+    "ipykernel>=7.4.0",
+    "jaxtyping>=0.3.11",
+    "kornia",
+    "matplotlib>=3.11.2",
+    "monai>=1.6.1",
+    "mypy>=1.11",
+    "nibabel>=5.4.2",
+    "nilearn>=0.14.1",
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+    "tqdm>=4.70.1",
+]
+
+[tool.ruff.lint]
+ignore = ["F722"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu132" }
+torchvision = { index = "pytorch-cu132" }
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
