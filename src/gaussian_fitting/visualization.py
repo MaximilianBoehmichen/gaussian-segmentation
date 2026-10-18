@@ -5,7 +5,7 @@ import torchvision.utils as vutils
 import torch
 from matplotlib import pyplot as plt
 
-from knn import StructuredGridKNN
+from gaussian_fitting.knn import StructuredGridKNN
 
 import torchvision.utils as vutils
 import nibabel as nib

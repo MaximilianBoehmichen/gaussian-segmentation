@@ -3,7 +3,6 @@ import sys
 from typing import Union, Optional
 
 import torch
-import tqdm
 # from pytorch3d.ops import knn_points
 # import cuml
 # from cuml.neighbors import NearestNeighbors
@@ -205,7 +204,7 @@ class StructuredVoronoiFAISSKNN:
         # Cache max bounds to avoid repeated computations inside the loop
         max_bounds = self.grid_shape - 1
 
-        for i in tqdm.tqdm(range(0, M, batch_size)):
+        for i in range(0, M, batch_size):
             end_idx = min(i + batch_size, M)
             batch_coords = query_coords[i:end_idx].contiguous()
 
@@ -353,7 +352,7 @@ class VoronoiFAISSKNN:
         # Pre-allocate exact output shape
         all_indices = torch.empty((M, self.k), dtype=torch.int64, device=self.device)
 
-        for i in tqdm.tqdm(range(0, M, batch_size)):
+        for i in range(0, M, batch_size):
             end_idx = min(i + batch_size, M)
             batch_coords = query_coords[i:end_idx].contiguous()
 
@@ -434,7 +433,7 @@ class FaissKNN:
         # Pre-allocate exact output shape
         all_indices = torch.empty((M, self.k), dtype=torch.int64, device=self.device)
 
-        for i in tqdm.tqdm(range(0, M, batch_size)):
+        for i in range(0, M, batch_size):
             end_idx = min(i + batch_size, M)
             batch_coords = query_coords[i:end_idx].contiguous()
 
@@ -808,7 +807,7 @@ class Pytorch3DKNN:
         # PyTorch3D requires a batch dimension: (1, N, dim)
         targets_batched = self.target_points.unsqueeze(0)
 
-        for i in tqdm.tqdm(range(0, M, batch_size)):
+        for i in range(0, M, batch_size):
             batch_coords = query_coords[i:i + batch_size]
 
             # batch_coords_batched: (1, batch_size, dim)
@@ -929,7 +928,7 @@ class CuML3DKNN:
         # Pre-allocate output tensor on the target device
         all_indices = torch.empty((M, self.k), dtype=torch.int64, device=self.device)
 
-        for i in tqdm.tqdm(range(0, M, batch_size)):
+        for i in range(0, M, batch_size):
             end_idx = min(i + batch_size, M)
             batch_coords = query_coords[i:end_idx]
 
