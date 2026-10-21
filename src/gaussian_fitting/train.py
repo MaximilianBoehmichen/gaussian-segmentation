@@ -368,7 +368,7 @@ def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.de
         print(f"\n========== Processing Split: {split} ==========")
         split_out_dir.mkdir(parents=True, exist_ok=True)
 
-        for subject_path in tqdm.tqdm(list(split_in_dir.iterdir())[:2], desc=f"Processing {split} subjects"):
+        for subject_path in tqdm.tqdm(list(split_in_dir.iterdir()), desc=f"Processing {split} subjects"):
             if not subject_path.is_dir():
                 continue
 
