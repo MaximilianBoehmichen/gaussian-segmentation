@@ -19,7 +19,7 @@ from torch_geometric.data import Data
 
 from gaussian_fitting import knn
 from gaussian_fitting.gaussian_representation import GaussianIntensityField
-from gaussian_fitting.visualization import save_visualization, save_reconstructed_volume, save_interpolated_volume
+from gaussian_fitting.visualization import save_visualization
 
 # 1. Enable TF32 for massive Ampere+ Tensor Core speedups
 warnings.filterwarnings("ignore", message=".*torch._prims_common.check.*")
@@ -30,8 +30,9 @@ torch.set_float32_matmul_precision('high')
 @dataclass
 class TrainConfig:
     compression_factor: float = 10.0
-    max_epochs: int = 101
-    logging_rate: int = 20
+    max_epochs: int = 1000
+    logging_rate: int = 50
+    saving_rate: int = 50
     sample_prop: float = 0.1
     # Component-specific learning rates
     lr_mus: float = 1e-1
@@ -45,8 +46,8 @@ class TrainConfig:
     knn_type: str = 'structured_voronoi'  # 'knn', 'voronoi', 'structured_voronoi'
     knn_update_rate: int = 50
     K: int = 24
-    k_graph: int = 15  # NEW: Number of neighbors for the Gaussian-to-Gaussian PyG graph
-    K_candidates: int = 300  # For structured component
+    k_graph: int = 24
+    K_candidates: int = 256  # For structured component
     deform_control_points_per_dim: Tuple[int, int, int] = (20, 20, 20)  # For structured component
     voronoi_nlist: int = 1024  # Ideally should be ~sqrt(centroids). For voronoi component
     voronoi_nprobe: int = 32  # Should be 1% - 10% of nlist. For voronoi component
@@ -57,6 +58,17 @@ class TrainConfig:
 
 
 def extract_pyg_data(gs: GaussianIntensityField, k_graph: int = 15, psnr: Optional[float] = None) -> Data:
+    """
+    Extracts a PyTorch Geometric (PyG) graph representation from a GaussianIntensityField.
+
+    Args:
+        gs (GaussianIntensityField): The optimized Gaussian field.
+        k_graph (int): Number of nearest neighbors for constructing graph edges.
+        psnr (Optional[float]): Peak Signal-to-Noise Ratio to include as graph metadata.
+
+    Returns:
+        Data: A PyG Data object containing node features, positions, and edge indices.
+    """
     with torch.no_grad():
         mus = gs.mus.detach().cpu()
 
@@ -86,30 +98,29 @@ def extract_pyg_data(gs: GaussianIntensityField, k_graph: int = 15, psnr: Option
     return data
 
 
-def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
-          cfg: TrainConfig, device: torch.device, enable_logging: bool = True) -> float:
+def train(subject_out_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
+          cfg: TrainConfig, device: torch.device,
+          log_plots: bool = False, log_images: bool = False) -> float:
     """
     Main training loop optimizing the Gaussian Intensity Field.
 
     Args:
-        run_dir (Path): Output directory for logs and models.
+        subject_out_dir (Path): Base output directory for the current subject.
+                                Intermediate step folders and metric plots will be saved here.
         gs (GaussianIntensityField): The model to train.
         img_tensor (torch.Tensor): Ground truth volume. Expected shape: (C, Z, Y, X).
         cfg (TrainConfig): Training configuration hyperparameters.
         device (torch.device): Compute device.
-        enable_logging (bool): If True, generates plots and NIfTI volumes.
+        log_plots (bool): If True, tracks and saves PSNR/Loss metric plots.
+        log_images (bool): If True, saves visual output images along with the intermediate and final steps.
 
     Returns:
         float: The final full-volume reconstruction PSNR (in dB).
     """
-    # Start timer at the very beginning to include initialization
     t0 = time.time()
-
-    # Initialize from image happens inside training routine now
     gs.initialize_parameters_from_image(img_tensor)
 
     spatial_shape = img_tensor.shape[1:]
-
     grid_axes = [torch.arange(s, device=device) for s in spatial_shape]
     coords_voxel = torch.stack(torch.meshgrid(*grid_axes, indexing='ij'), dim=-1).float()
     coords_voxel_flat = coords_voxel.view(-1, gs.D)
@@ -207,33 +218,38 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
             print(f"Epoch {epoch:03d} | Time: {time.time() - t0:.2f}s | "
                   f"Loss: {loss.item():.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
 
-        # Intermediate Logging Block
-        if enable_logging:
+        is_plot_step = log_plots and (epoch > 0 and epoch % cfg.logging_rate == 0)
+        is_saving_step = (epoch > 0 and epoch % cfg.saving_rate == 0)
+
+        if log_plots:
             epochs_list.append(epoch)
             loss_list.append(loss.item())
 
-            if epoch > 0 and epoch % cfg.logging_rate == 0:
-                save_visualization(gs, img_tensor, knn_index, epoch, run_dir, device)
+        if is_plot_step or is_saving_step:
+            mse_sum = 0.0
+            chunk_size = 500_000
+            gs.eval()
+            with torch.no_grad():
+                for i in range(0, num_voxels, chunk_size):
+                    end = min(i + chunk_size, num_voxels)
+                    b_coords = coords_voxel_flat[i:end]
+                    b_knn = knn_cache_flat[i:end]
+                    b_targets = img_flat[i:end]
 
-                # Chunked intermediate PSNR calculation
-                mse_sum = 0.0
-                chunk_size = 500_000
-                gs.eval()
-                with torch.no_grad():
-                    for i in range(0, num_voxels, chunk_size):
-                        end = min(i + chunk_size, num_voxels)
-                        b_coords = coords_voxel_flat[i:end]
-                        b_knn = knn_cache_flat[i:end]
-                        b_targets = img_flat[i:end]
+                    with torch.amp.autocast('cuda'):
+                        pred = gs(b_coords, b_knn)
+                        mse_sum += F.mse_loss(pred, b_targets, reduction='sum').item()
+            gs.train()
 
-                        with torch.amp.autocast('cuda'):
-                            pred = gs(b_coords, b_knn)
-                            mse_sum += F.mse_loss(pred, b_targets, reduction='sum').item()
-                gs.train()
+            full_mse = mse_sum / num_voxels
+            intermediate_psnr = 10 * math.log10((max_img_val ** 2) / full_mse) if full_mse > 0 else 100.0
 
-                full_mse = mse_sum / num_voxels
-                intermediate_psnr = 10 * math.log10((max_img_val ** 2) / full_mse) if full_mse > 0 else 100.0
+            # Step directory is created once if needed for state dict, graph, or images
+            step_dir = subject_out_dir / str(epoch)
+            if is_saving_step:
+                step_dir.mkdir(parents=True, exist_ok=True)
 
+            if is_plot_step:
                 psnr_epochs.append(epoch)
                 psnr_list.append(intermediate_psnr)
                 print(f"--> Intermediate Full Volume PSNR: {intermediate_psnr:.2f} dB")
@@ -252,12 +268,21 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
 
                 plt.title('Training Metrics over Epochs')
                 fig.tight_layout()
-                fig.savefig(run_dir / 'metrics_plot.png')
+                fig.savefig(subject_out_dir / 'metrics_plot.png')
                 plt.close(fig)
+
+            if is_saving_step:
+                print(f"--> Saving intermediate representation at step {epoch}")
+                torch.save(gs.state_dict(), step_dir / "learned_params.pth")
+
+                pyg_data = extract_pyg_data(gs, k_graph=cfg.k_graph, psnr=intermediate_psnr)
+                torch.save(pyg_data, step_dir / "graph_data.pt")
+
+                if log_images:
+                    save_visualization(gs, img_tensor, knn_index, epoch, step_dir, device)
 
     print(f"Training complete in {time.time() - t0:.2f}s.")
 
-    # Unconditional Final PSNR Calculation (Guaranteed to execute on optimized weights)
     mse_sum = 0.0
     chunk_size = 500_000
     gs.eval()
@@ -278,14 +303,26 @@ def train(run_dir: Path, gs: GaussianIntensityField, img_tensor: torch.Tensor,
 
     print(f"--> Final Full Volume PSNR: {final_psnr:.2f} dB")
 
-    if enable_logging:
-        save_reconstructed_volume(gs, knn_index, img_tensor.shape, run_dir / "reconstructed_vol.nii.gz", device)
-        save_interpolated_volume(gs, knn_index, img_tensor.shape, run_dir / "reconstructed_vol.nii.gz", device)
+    # Guarantee final images are saved if log_images is True
+    if log_images:
+        final_step_dir = subject_out_dir / str(cfg.max_epochs)
+        final_step_dir.mkdir(parents=True, exist_ok=True)
+        save_visualization(gs, img_tensor, knn_index, cfg.max_epochs, final_step_dir, device)
 
     return final_psnr
 
 
 def load_nifti_as_tensor(file_path: Union[str, Path], squeeze_dims: bool = True) -> torch.Tensor:
+    """
+    Loads a NIfTI volume and converts it into a PyTorch Tensor.
+
+    Args:
+        file_path (Union[str, Path]): Path to the `.nii` or `.nii.gz` file.
+        squeeze_dims (bool): Whether to squeeze singleton dimensions.
+
+    Returns:
+        torch.Tensor: The loaded image data. Output shape: (C, Z, Y, X) where C is channels.
+    """
     img_array = nib.load(str(file_path)).get_fdata()
     img_array = np.transpose(img_array)
     img_tensor = torch.tensor(img_array, dtype=torch.float32)
@@ -301,12 +338,28 @@ def load_nifti_as_tensor(file_path: Union[str, Path], squeeze_dims: bool = True)
 
 
 def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.device,
-                          enable_logging: bool = True) -> None:
+                          log_plots: bool = False, log_images: bool = False) -> None:
+    """
+    Iterates over the OASIS dataset splits and applies Gaussian Intensity Field fitting.
+
+    Args:
+        dataset_dir (Path): Root dataset path containing 'train', 'val', 'test'.
+        results_dir (Path): Root results directory.
+        device (torch.device): Compute device for execution.
+        log_plots (bool): Whether to log and plot training metrics.
+        log_images (bool): Whether to save visualization images.
+    """
+    cfg = TrainConfig()
+
+    # Structure: .../OASIS_GAUSS_COMPRESS/compression_10.0/<timestamp>/
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_base_dir = results_dir / f"compression_{cfg.compression_factor}" / timestamp
+
     splits = ['train', 'val', 'test']
 
     for split in splits:
         split_in_dir = dataset_dir / split
-        split_out_dir = results_dir / split
+        split_out_dir = run_base_dir / split
 
         if not split_in_dir.exists() or not split_in_dir.is_dir():
             print(f"\n--- Split directory not found, skipping: {split_in_dir} ---")
@@ -315,7 +368,7 @@ def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.de
         print(f"\n========== Processing Split: {split} ==========")
         split_out_dir.mkdir(parents=True, exist_ok=True)
 
-        for subject_path in tqdm.tqdm(list(split_in_dir.iterdir()), desc=f"Processing {split} subjects"):
+        for subject_path in tqdm.tqdm(list(split_in_dir.iterdir())[:2], desc=f"Processing {split} subjects"):
             if not subject_path.is_dir():
                 continue
 
@@ -331,8 +384,6 @@ def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.de
 
             img_tensor = load_nifti_as_tensor(nii_file)
             img_tensor = img_tensor.to(device)
-
-            cfg = TrainConfig()
 
             spatial_shape = img_tensor.shape[1:]
             num_channels = img_tensor.shape[0]
@@ -357,26 +408,22 @@ def process_oasis_dataset(dataset_dir: Path, results_dir: Path, device: torch.de
             print(f"Original Params: {original_params} -> Gaussians Params: {num_gaussians * params_per_gaussian}")
             print(f"Calculated Num gaussians: {gs.num_gaussians} for compression factor {cfg.compression_factor}")
 
-            run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            run_dir = subject_out_dir / run_id
-
-            if enable_logging:
-                run_dir.mkdir(exist_ok=True, parents=True)
-
-            final_psnr = train(run_dir, gs, img_tensor, cfg, device, enable_logging=enable_logging)
+            final_psnr = train(subject_out_dir, gs, img_tensor, cfg, device,
+                               log_plots=log_plots, log_images=log_images)
 
             print(f"Saving representations for {subject_id}. Final PSNR: {final_psnr:.2f} dB")
 
-            # Save standard representation state dict
-            param_save_path = subject_out_dir / "learned_params.pth"
-            torch.save(gs.state_dict(), param_save_path)
-            print(f"Saved learned parameters to: {param_save_path}")
+            final_step_dir = subject_out_dir / str(cfg.max_epochs)
+            final_step_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract and save PyG Graph Data
+            param_save_path = final_step_dir / "learned_params.pth"
+            torch.save(gs.state_dict(), param_save_path)
+            print(f"Saved final learned parameters to: {param_save_path}")
+
             pyg_data = extract_pyg_data(gs, k_graph=cfg.k_graph, psnr=final_psnr)
-            pyg_save_path = subject_out_dir / "graph_data.pt"
+            pyg_save_path = final_step_dir / "graph_data.pt"
             torch.save(pyg_data, pyg_save_path)
-            print(f"Saved PyG graph data to: {pyg_save_path}\n")
+            print(f"Saved final PyG graph data to: {pyg_save_path}\n")
 
 
 if __name__ == '__main__':
@@ -385,8 +432,12 @@ if __name__ == '__main__':
                         help="Path to the root of the dataset containing train, val, and test subdirectories.")
     parser.add_argument("--output_path", type=str, default="/vol/miltank/projects/L2R/projects/OASIS_GAUSS_COMPRESS",
                         help="Path to save the output representations, logs, and graphs.")
-    parser.add_argument("--enable_logging", action="store_true",
-                        help="Enable intermediate logging, plots, and volume visualization saving to speed up training.")
+    parser.add_argument("--log_plots", action="store_true",
+                        help="Enable intermediate saving of loss and PSNR metric plots.")
+    parser.add_argument("--log_images", action="store_true",
+                        help="Enable saving of visualization images along with the saved checkpoints.")
+    parser.add_argument("--num_reruns", type=int, default=1,
+                        help="Number of times to rerun the entire script for dataset augmentation.")
 
     args = parser.parse_args()
 
@@ -399,6 +450,15 @@ if __name__ == '__main__':
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset root path does not exist: {dataset_path}")
 
-    enable_logging = args.enable_logging
+    for run_idx in range(args.num_reruns):
+        if args.num_reruns > 1:
+            print(f"\n{'=' * 50}")
+            print(f"Starting execution run {run_idx + 1} of {args.num_reruns}")
+            print(f"{'=' * 50}\n")
 
-    process_oasis_dataset(dataset_path, output_path, device, enable_logging=enable_logging)
+        process_oasis_dataset(dataset_path, output_path, device,
+                              log_plots=args.log_plots, log_images=args.log_images)
+
+        # Ensure sequential timestamps do not collide on exceptionally fast or empty runs
+        if args.num_reruns > 1 and run_idx < args.num_reruns - 1:
+            time.sleep(1)
