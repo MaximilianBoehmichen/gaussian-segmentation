@@ -51,7 +51,9 @@ def get_loss_and_sampling(loss: str) -> tuple[torch.nn.Module, Callable]:
     return losses[loss]
 
 
-def sample_voxels(spatial_shape, batch_size: int, device: torch.device) -> tuple[torch.Tensor, tuple]:
+def sample_voxels(
+        spatial_shape, batch_size: int, device: torch.device
+) -> tuple[torch.Tensor, tuple]:
     """Sample random voxels.
 
     Args:
@@ -67,8 +69,9 @@ def sample_voxels(spatial_shape, batch_size: int, device: torch.device) -> tuple
     return indices, (-1, 1)
 
 
-def sample_patches(spatial_shape, batch_size: int, device: torch.device, patch_size: int = 48) -> tuple[
-    torch.Tensor, tuple]:
+def sample_patches(
+        spatial_shape, batch_size: int, device: torch.device, patch_size: int = 48
+) -> tuple[torch.Tensor, tuple]:
     """Sample random contiguous patches.
 
     Args:
@@ -86,12 +89,22 @@ def sample_patches(spatial_shape, batch_size: int, device: torch.device, patch_s
     n = max(1, round(batch_size / patch_size ** 3))
     D, H, W = spatial_shape
 
-    starts = torch.stack([torch.randint(0, s - patch_size + 1, (n,), device=device) for s in spatial_shape], dim=-1)
+    starts = torch.stack(
+        [
+            torch.randint(0, s - patch_size + 1, (n,), device=device)
+            for s in spatial_shape
+        ],
+        dim=-1,
+    )
     in_patch = torch.arange(patch_size, device=device)
-    in_patch_d, in_patch_h, in_patch_w = torch.meshgrid(in_patch, in_patch, in_patch, indexing="ij")
+    in_patch_d, in_patch_h, in_patch_w = torch.meshgrid(
+        in_patch, in_patch, in_patch, indexing="ij"
+    )
 
-    indices = ((starts[:, 0, None, None, None] + in_patch_d) * H + (
-                starts[:, 1, None, None, None] + in_patch_h)) * W + (starts[:, 2, None, None, None] + in_patch_w)
+    indices = (
+                      (starts[:, 0, None, None, None] + in_patch_d) * H
+                      + (starts[:, 1, None, None, None] + in_patch_h)
+              ) * W + (starts[:, 2, None, None, None] + in_patch_w)
 
     return indices.reshape(-1), (n, 1, patch_size, patch_size, patch_size)
 
@@ -99,7 +112,9 @@ def sample_patches(spatial_shape, batch_size: int, device: torch.device, patch_s
 def process_search_space(
         train_config: TrainConfig,
         dataset_path: Path = Path("/vol/miltank/projects/L2R/OASIS_L2R"),
-        device: torch.device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu"),
+        device: torch.device = torch.device("cuda:0")
+        if torch.cuda.is_available()
+        else torch.device("cpu"),
         start: int = 0,
         end: int = 2 ** 31,
 ):
@@ -163,8 +178,12 @@ def train(
         image_flat = image.permute(*range(1, image.ndim), 0).reshape(-1, 1)
 
         total_params = math.prod(image.shape)
-        params_per_gaussian = GaussianIntensityField.params_per_gaussian(len(image.shape[1:]), 1)
-        num_gaussians = int((total_params * (search_space.params_percent / 100.0)) / params_per_gaussian)
+        params_per_gaussian = GaussianIntensityField.params_per_gaussian(
+            len(image.shape[1:]), 1
+        )
+        num_gaussians = int(
+            (total_params * (search_space.params_percent / 100.0)) / params_per_gaussian
+        )
 
         # start timed training --------------------------------
         torch.cuda.synchronize()
@@ -190,7 +209,9 @@ def train(
             dim=3,
             range_min=gs.coord_min,
             range_max=gs.coord_max,
-            spacing=float(search_space.cell_size, ),
+            spacing=float(
+                search_space.cell_size,
+            ),
             nlist=int(math.sqrt(num_gaussians)),
             nprobe=16,  # I hope that's enough, 6% nlist < nprobe < 20% nlist in the search space
             k_candidates=train_config.K_candidates,
@@ -209,7 +230,7 @@ def train(
         knn_cache_flat = knn_index.query_via_chunks(coords_voxel_flat)
 
         optimizer = torch.optim.Adam(gs.parameters(), lr=search_space.lr)
-        scaler = torch.amp.GradScaler('cuda')
+        scaler = torch.amp.GradScaler("cuda")
         loss_fn, sample_batch = get_loss_and_sampling(search_space.loss)
         loss = torch.full((1,), 0.0)
         batch_size = int(total_params * train_config.sample_prop)
@@ -225,7 +246,9 @@ def train(
                     break
 
             if epoch > 0 and epoch % search_space.knn_update_rate == 0:
-                knn_index.build(gs.mus.data.detach(), precisions=gs.get_precision_matrices)
+                knn_index.build(
+                    gs.mus.data.detach(), precisions=gs.get_precision_matrices
+                )
                 knn_cache_flat = knn_index.query_via_chunks(coords_voxel_flat)
 
             indices, shape = sample_batch(spatial_shape, batch_size, device)
@@ -235,10 +258,12 @@ def train(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast("cuda"):
                 pred_intensities = gs(batch_coords, batch_knn)
 
-            loss = loss_fn(pred_intensities.float().view(shape), batch_target_vals.view(shape))
+            loss = loss_fn(
+                pred_intensities.float().view(shape), batch_target_vals.view(shape)
+            )
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -254,7 +279,9 @@ def train(
             _ = extract_pyg_data(gs, train_config.k_graph, psnr=0.0)
 
             torch.cuda.synchronize()
-            aggregates[i][f"t_{epoch}_full"] = aggregates[i].get(f"t_{epoch}_raw", 0.0) + time.time() - t1
+            aggregates[i][f"t_{epoch}_full"] = (
+                    aggregates[i].get(f"t_{epoch}_raw", 0.0) + time.time() - t1
+            )
 
         # end timed extraction --------------------------------
         # (unrelated to training) metric calculation not timed
@@ -275,40 +302,76 @@ def train(
                     b_knn = knn_cache_flat[k:end]
                     b_targets = image_flat[k:end]
 
-                    with torch.amp.autocast('cuda'):
+                    with torch.amp.autocast("cuda"):
                         pred = gs(b_coords, b_knn)
-                        mse_sum += F.mse_loss(pred, b_targets, reduction='sum').item()
+                        mse_sum += F.mse_loss(pred, b_targets, reduction="sum").item()
 
                         preds.append(pred.float())
 
                 pred_volume = torch.cat(preds).view(1, 1, *spatial_shape)
                 full_mse = mse_sum / total_params
-                final_psnr = 10 * math.log10((image.max().item() ** 2) / full_mse) if full_mse > 0 else 100.0
-                final_ssim = ssim(pred_volume, image.unsqueeze(0), data_range=1.0).item()
+                final_psnr = (
+                    10 * math.log10((image.max().item() ** 2) / full_mse)
+                    if full_mse > 0
+                    else 100.0
+                )
+                final_ssim = ssim(
+                    pred_volume, image.unsqueeze(0), data_range=1.0
+                ).item()
 
                 aggregates[i][f"mse_{epoch}"] = full_mse
                 aggregates[i][f"psnr_{epoch}"] = final_psnr
                 aggregates[i][f"ssim_{epoch}"] = final_ssim
 
         del (
-            gs, representations, knn_index, knn_cache_flat, optimizer, scaler, coords_voxel, coords_voxel_flat, preds,
-            pred_volume, image, image_flat, batch_coords, batch_knn, pred_intensities, loss, pred, b_coords, b_knn,
-            b_targets
+            gs,
+            representations,
+            knn_index,
+            knn_cache_flat,
+            optimizer,
+            scaler,
+            coords_voxel,
+            coords_voxel_flat,
+            preds,
+            pred_volume,
+            image,
+            image_flat,
+            batch_coords,
+            batch_knn,
+            pred_intensities,
+            loss,
+            pred,
+            b_coords,
+            b_knn,
+            b_targets,
         )
 
     return aggregates
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Fit Gaussian Intensity Fields to OASIS dataset splits.")
-    parser.add_argument("--dataset_path", type=str, default="/vol/miltank/projects/L2R/OASIS_L2R",
-                        help="Path to the root of the dataset containing train, val, and test subdirectories.")
-    parser.add_argument("--start", type=int, default=0, help="At which search space iteration to continue.")
-    parser.add_argument("--end", type=int, help="At which search space iteration to end.")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Fit Gaussian Intensity Fields to OASIS dataset splits."
+    )
+    parser.add_argument(
+        "--dataset_path",
+        type=str,
+        default="/vol/miltank/projects/L2R/OASIS_L2R",
+        help="Path to the root of the dataset containing train, val, and test subdirectories.",
+    )
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="At which search space iteration to continue.",
+    )
+    parser.add_argument(
+        "--end", type=int, help="At which search space iteration to end."
+    )
 
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}...")
 
     dataset_path = Path(args.dataset_path)

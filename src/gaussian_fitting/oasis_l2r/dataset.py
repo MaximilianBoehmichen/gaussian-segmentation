@@ -14,7 +14,10 @@ class OasisL2RDataset(Dataset[OasisVolume]):
 
     root: Path
     split: Split
-    transforms: Callable[[dict[str, OasisVolume | OasisLabel | dict]], dict[str, OasisVolume | OasisLabel | dict]]
+    transforms: Callable[
+        [dict[str, OasisVolume | OasisLabel | dict]],
+        dict[str, OasisVolume | OasisLabel | dict],
+    ]
     cache: bool
     seed: int
     filenames: tuple[str, str]
@@ -28,8 +31,9 @@ class OasisL2RDataset(Dataset[OasisVolume]):
             split: Split,
             *,
             transforms: Callable[
-                [dict[str, OasisVolume | OasisLabel | dict]], dict[str, OasisVolume | OasisLabel | dict]] = lambda
-                    x: x,
+                [dict[str, OasisVolume | OasisLabel | dict]],
+                dict[str, OasisVolume | OasisLabel | dict],
+            ] = lambda x: x,
             cache: bool = False,
             pre_load: bool = False,
             seed: int = 848577,
@@ -67,8 +71,12 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         Returns:
             The dataset returnable sample.
         """
-        image = nib.Nifti1Image.from_filename(path / self.filenames[0]).get_fdata(dtype=np.float32)
-        label = nib.Nifti1Image.from_filename(path / self.filenames[1]).get_fdata(dtype=np.uint8)
+        image = nib.Nifti1Image.from_filename(path / self.filenames[0]).get_fdata(
+            dtype=np.float32
+        )
+        label = nib.Nifti1Image.from_filename(path / self.filenames[1]).get_fdata(
+            dtype=np.uint8
+        )
 
         return torch.tensor(image), torch.tensor(label), path.name
 

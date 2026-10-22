@@ -1,6 +1,5 @@
 from typing import Literal
 
-import numpy as np
 import torch
 from jaxtyping import Float32, Float64, Float, Int8, Int64, Int
 
