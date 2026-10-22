@@ -1,3 +1,10 @@
+"""
+Defines GaussianIntensityField, an n-dimensional mixture-of-Gaussians model that represents
+a volumetric intensity field (e.g. an MRI scan) as a compact set of anisotropic Gaussians
+with learnable positions, covariances, and per-channel intensities, including structure-aware
+initialization from an input image.
+"""
+
 import time
 from typing import Tuple, Union, Optional
 

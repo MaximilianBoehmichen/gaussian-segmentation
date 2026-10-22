@@ -1,3 +1,9 @@
+"""
+Collection of GPU-accelerated K-Nearest Neighbors backends (FAISS-based grid/Voronoi caches,
+PyKeOps, PyTorch3D, cuML) sharing a build()/query() interface, used to find the nearest
+Gaussians to each queried coordinate when evaluating a GaussianIntensityField.
+"""
+
 import os
 import sys
 from typing import Callable, Literal, Union, Optional

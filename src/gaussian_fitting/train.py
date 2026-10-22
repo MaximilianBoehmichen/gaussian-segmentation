@@ -1,3 +1,10 @@
+"""
+Training entry point for fitting GaussianIntensityField models to the OASIS dataset: defines
+the TrainConfig hyperparameters, the main optimization loop (KNN-cached forward passes, AMP,
+LR scheduling, checkpointing/visualization), and the CLI script that iterates over the
+dataset's train/val/test subjects to fit and save compressed Gaussian representations.
+"""
+
 import time
 import math
 import warnings
