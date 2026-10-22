@@ -1,9 +1,9 @@
 from collections.abc import Callable
-from linecache import cache
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
 from config.types import OasisLabel, Split, OasisVolume
@@ -14,20 +14,21 @@ class OasisL2RDataset(Dataset[OasisVolume]):
 
     root: Path
     split: Split
-    transforms: Callable[[dict[str, OasisVolume | OasisLabel]], dict[str, OasisVolume | OasisLabel]]
+    transforms: Callable[[dict[str, OasisVolume | OasisLabel | dict]], dict[str, OasisVolume | OasisLabel | dict]]
     cache: bool
     seed: int
     filenames: tuple[str, str]
 
     _split_files: list[Path]
-    _sample_cache: dict[int, tuple[OasisVolume, OasisLabel]] = {}
+    _sample_cache: dict[int, tuple[OasisVolume, OasisLabel, str]] = {}
 
     def __init__(
             self,
             root: Path | str,
             split: Split,
             *,
-            transforms: Callable[[dict[str, OasisVolume | OasisLabel]], dict[str, OasisVolume | OasisLabel]] = lambda
+            transforms: Callable[
+                [dict[str, OasisVolume | OasisLabel | dict]], dict[str, OasisVolume | OasisLabel | dict]] = lambda
                     x: x,
             cache: bool = False,
             pre_load: bool = False,
@@ -57,7 +58,7 @@ class OasisL2RDataset(Dataset[OasisVolume]):
             for i, sample_path in enumerate(self._split_files):
                 self._sample_cache[i] = self._load_sample(sample_path)
 
-    def _load_sample(self, path: Path) -> tuple[OasisVolume, OasisLabel]:
+    def _load_sample(self, path: Path) -> tuple[OasisVolume, OasisLabel, str]:
         """Loads the sample image and label.
 
         Args:
@@ -69,7 +70,7 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         image = nib.Nifti1Image.from_filename(path / self.filenames[0]).get_fdata(dtype=np.float32)
         label = nib.Nifti1Image.from_filename(path / self.filenames[1]).get_fdata(dtype=np.uint8)
 
-        return image, label
+        return torch.tensor(image), torch.tensor(label), path.name
 
     def __len__(self) -> int:
         """Gives the length of the dataset's current split.
@@ -79,7 +80,7 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         """
         return len(self._split_files)
 
-    def __getitem__(self, index: int) -> dict[str, OasisVolume | OasisLabel]:
+    def __getitem__(self, index: int) -> dict[str, OasisVolume | OasisLabel | dict]:
         """Gives the data for a given selected sample.
 
         Args:
@@ -88,17 +89,20 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         Returns:
             The sample for the index after applied transforms.
         """
-        image, label = self._sample_cache.get(index, (None, None))
+        image, label, name = self._sample_cache.get(index, (None, None, ""))
 
         if image is None or label is None:
-            image, label = self._load_sample(self._split_files[index])
+            image, label, name = self._load_sample(self._split_files[index])
 
-            if cache:
-                self._sample_cache[index] = (image, label)
+            if self.cache:
+                self._sample_cache[index] = (image, label, name)
 
         sample = {
-            "image": image.copy(),
-            "label": label.copy().astype(np.int64),
+            "image": image.clone(),
+            "label": label.clone().to(torch.int64),
+            "info": {
+                "name": name,
+            },
         }
 
         return self.transforms(sample)
