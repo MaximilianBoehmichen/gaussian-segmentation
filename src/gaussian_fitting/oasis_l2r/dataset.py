@@ -76,7 +76,7 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         )
         label = np.asarray(nib.Nifti1Image.from_filename(path / self.filenames[1]).dataobj).astype(np.uint8)
 
-        return torch.tensor(image), torch.tensor(label), path.name
+        return torch.from_numpy(np.ascontiguousarray(image)), torch.from_numpy(np.ascontiguousarray(label)), path.name
 
     def __len__(self) -> int:
         """Gives the length of the dataset's current split.
