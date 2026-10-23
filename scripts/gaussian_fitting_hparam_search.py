@@ -292,7 +292,7 @@ def train(
 
             gs = representations[j]
             gs.eval()
-            knn_index.build(gs.mus.detach(), precisions=gs.get_precision_matrices())
+            knn_index.build(gs.mus.detach(), precisions=gs.get_precision_matrices)
             knn_cache_flat = knn_index.query_via_chunks(coords_voxel_flat)
 
             with torch.no_grad():
