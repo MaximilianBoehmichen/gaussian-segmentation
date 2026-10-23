@@ -1,18 +1,17 @@
 from typing import Literal
 
-import numpy as np
 import torch
 from jaxtyping import Float32, Float64, Float, Int8, Int64, Int
 
 type Split = Literal["train", "val", "test"]
 
-type OasisLabel = Int8[np.ndarray, "LR SI AP"]
+type OasisLabel = Int8[torch.Tensor, "LR SI AP"]
 type OasisLabelTensor = Int64[torch.Tensor, "LR SI AP"]
-type OasisVolume = Float64[np.ndarray, "LR SI AP"]
+type OasisVolume = Float64[torch.Tensor, "LR SI AP"]
 type OasisVolumeTensor = Float64[torch.Tensor, "LR SI AP"]
 
-type OasisLabelBatch = Int8[OasisLabel, "B"]
-type OasisVolumeBatch = Float64[OasisVolume, "B"]
+type OasisLabelBatch = Int8[OasisLabel, "B"]  # noqa: F821
+type OasisVolumeBatch = Float64[OasisVolume, "B"]  # noqa: F821
 
 type Label = OasisLabel
 type LabelTensor = OasisLabelTensor

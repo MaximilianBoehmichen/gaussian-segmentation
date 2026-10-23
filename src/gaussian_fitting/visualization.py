@@ -1,3 +1,9 @@
+"""
+Visualization and export utilities for trained GaussianIntensityField models: saves
+ground-truth/prediction/error slice comparisons as PNGs during training, exports full or
+upsampled reconstructed volumes to NIfTI files, and plots pixel intensity histograms.
+"""
+
 from pathlib import Path
 
 import numpy as np

@@ -19,14 +19,24 @@ class GSTrainingConfig(MetaConfig):
     """
 
     num_gaussians: int = 16  # Number of Gaussians to train
-    gradient_init_percentage: float = 1.0  # Percentage of Gaussians to init by image gradient
+    gradient_init_percentage: float = (
+        1.0  # Percentage of Gaussians to init by image gradient
+    )
     max_epochs: int = 500  # Number of optimization epochs
     knn_metric: Literal["l2", "mahalanobis"] = "l2"
-    k_neighborhood: int = 15  # Number of nearby Gaussians to consider (larger K -> slower)
+    k_neighborhood: int = (
+        15  # Number of nearby Gaussians to consider (larger K -> slower)
+    )
     knn_update_rate: int = 10  # Number of steps after which the KNN will be updated
-    reg_weight_scale: float = 0.1  # Regularization weight for Gaussian scales being too small/big
-    reg_weight_pos: float = 0.0  # Regularization weight for Gaussian position leaving image bounds
+    reg_weight_scale: float = (
+        0.1  # Regularization weight for Gaussian scales being too small/big
+    )
+    reg_weight_pos: float = (
+        0.0  # Regularization weight for Gaussian position leaving image bounds
+    )
     learning_rate_start: float = 1e-2  # Starting learning rate for optimization
     learning_rate_end: float = 1e-5  # Ending learning rate for optimization
-    point_sample_prop: float = 0.9  # Percentage of total coordinates to supervise in minibatch
+    point_sample_prop: float = (
+        0.9  # Percentage of total coordinates to supervise in minibatch
+    )
     repetitions: int = 1

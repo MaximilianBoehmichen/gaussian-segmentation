@@ -1,6 +1,12 @@
+"""
+Collection of GPU-accelerated K-Nearest Neighbors backends (FAISS-based grid/Voronoi caches,
+PyKeOps, PyTorch3D, cuML) sharing a build()/query() interface, used to find the nearest
+Gaussians to each queried coordinate when evaluating a GaussianIntensityField.
+"""
+
 import os
 import sys
-from typing import Union, Optional
+from typing import Callable, Literal, Union, Optional
 
 import torch
 # from pytorch3d.ops import knn_points
@@ -26,7 +32,8 @@ class StructuredVoronoiFAISSKNN:
             nlist: int = 256,
             nprobe: int = 16,
             dim: Optional[int] = None,
-            device: Optional[str] = None
+            device: Optional[str] = None,
+            metric: Literal["l2", "mahalanobis"] = "l2",
     ):
         """
         Args:
@@ -38,6 +45,9 @@ class StructuredVoronoiFAISSKNN:
         if self.device == 'cpu':
             raise ValueError("StructuredGridFAISSKNN requires a CUDA device.")
 
+        if metric not in ("l2", "mahalanobis"):
+            raise ValueError(f"Unknown metric {metric}")
+
         self.k = k
         if k_candidates is not None:
             if k_candidates < k:
@@ -45,6 +55,8 @@ class StructuredVoronoiFAISSKNN:
             elif k_candidates == k:
                 k_candidates = None
         self.k_candidates = k_candidates
+
+        self.metric = metric
 
         # Infer dimensionality
         tensors = [t for t in (range_min, range_max, spacing) if isinstance(t, torch.Tensor) and t.numel() > 1]
@@ -77,6 +89,7 @@ class StructuredVoronoiFAISSKNN:
 
         self.cached_knn_indices: Optional[torch.Tensor] = None
         self.target_points: Optional[torch.Tensor] = None
+        self.precisions: torch.Tensor | None = None
 
         # --- FAISS GPU Initialization ---
         self.res = faiss.StandardGpuResources()
@@ -101,7 +114,7 @@ class StructuredVoronoiFAISSKNN:
             raise TypeError("Input must be a float or torch.Tensor")
 
     @torch.no_grad()
-    def build(self, target_points: torch.Tensor, *args) -> None:
+    def build(self, target_points: torch.Tensor, *args, precisions: Callable[[], torch.Tensor] | None = None) -> None:
         """
         Populates the control points' candidate pools using FAISS GPU clustering.
         """
@@ -132,6 +145,21 @@ class StructuredVoronoiFAISSKNN:
         # Save actual points in memory for the reranking stage in query()
         self.target_points = target_points
 
+        if self.metric == "mahalanobis":
+            if precisions is None:
+                raise ValueError("metric mahalanobis requires precision matrices")
+
+            self.precisions = precisions().detach().to(self.device, dtype=torch.float32).contiguous()
+
+    def _distances(self, query_coordinates: torch.Tensor, candidates: torch.Tensor) -> torch.Tensor:
+        difference = query_coordinates.unsqueeze(1) - self.target_points[candidates]
+
+        if self.metric == "mahalanobis":
+            return torch.einsum("nki,nkij,nkj->nk", difference, self.precisions[candidates], difference)
+
+        return (difference ** 2).sum(dim=-1)
+
+
     @torch.no_grad()
     def query(self, query_coords: torch.Tensor, *args) -> torch.Tensor:
         """
@@ -160,11 +188,8 @@ class StructuredVoronoiFAISSKNN:
         if self.k_candidates is None:
             return retrieved_indices
 
-        # 6. Reranking path (Exact local dense top-k)
-        candidate_coords = self.target_points[retrieved_indices]
-
         # Compute exact squared distances from query coords to their localized candidates
-        sq_dists = ((query_coords.unsqueeze(1) - candidate_coords) ** 2).sum(dim=-1)
+        sq_dists = self._distances(query_coords, retrieved_indices)
 
         # Find the local indices of the top k closest candidates
         _, local_top_k_indices = torch.topk(sq_dists, k=self.k, dim=1, largest=False, sorted=True)
@@ -191,6 +216,9 @@ class StructuredVoronoiFAISSKNN:
         """
         if self.cached_knn_indices is None or self.target_points is None:
             raise RuntimeError("You must call .build(target_points) before querying.")
+
+        if batch_size is not None and self.metric == "mahalanobis":
+            batch_size //= 4  # eyeballed, account for larger tensors for mahalanobis, so it doesn't distort the VRAM measurements
 
         query_coords = query_coords.to(self.device)
         if query_coords.dtype != torch.float32:
@@ -225,11 +253,8 @@ class StructuredVoronoiFAISSKNN:
                 all_indices[i:end_idx] = retrieved_indices
                 continue
 
-            # 6. Reranking path (Exact local dense top-k for the chunk)
-            candidate_coords = self.target_points[retrieved_indices]
-
             # Compute exact squared distances from query coords to their localized candidates
-            sq_dists = ((batch_coords.unsqueeze(1) - candidate_coords) ** 2).sum(dim=-1)
+            sq_dists = self._distances(batch_coords, retrieved_indices)
 
             # Find the local indices of the top k closest candidates
             _, local_top_k_indices = torch.topk(sq_dists, k=self.k, dim=1, largest=False, sorted=True)
