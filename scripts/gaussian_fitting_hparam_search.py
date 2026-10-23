@@ -27,7 +27,7 @@ SEARCH_SPACE: dict[str, list] = {
     "lr": [1e-1, 1e-2, 1e-3],
     "distance": ["l2", "mahalanobis"],
     "cell_size": [8, 12, 16],
-    "knn_update_rate": [10, 50, 100, 500],
+    "knn_update_rate": [50, 100, 200, 500],
 }
 
 
