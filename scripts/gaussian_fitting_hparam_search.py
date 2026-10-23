@@ -366,7 +366,10 @@ if __name__ == "__main__":
         help="At which search space iteration to continue.",
     )
     parser.add_argument(
-        "--end", type=int, help="At which search space iteration to end."
+        "--end",
+        type=int,
+        default=2 ** 31,
+        help="At which search space iteration to end.",
     )
 
     args = parser.parse_args()
