@@ -74,9 +74,7 @@ class OasisL2RDataset(Dataset[OasisVolume]):
         image = nib.Nifti1Image.from_filename(path / self.filenames[0]).get_fdata(
             dtype=np.float32
         )
-        label = nib.Nifti1Image.from_filename(path / self.filenames[1]).get_fdata(
-            dtype=np.uint8
-        )
+        label = np.asarray(nib.Nifti1Image.from_filename(path / self.filenames[1]).dataobj).astype(np.uint8)
 
         return torch.tensor(image), torch.tensor(label), path.name
 
