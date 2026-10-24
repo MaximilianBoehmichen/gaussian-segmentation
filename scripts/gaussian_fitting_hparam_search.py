@@ -1,4 +1,5 @@
 import copy
+import gc
 import itertools
 import json
 import math
@@ -24,9 +25,9 @@ END_EPOCHS = [100, 200, 300, 500, 1000]
 SEARCH_SPACE: dict[str, list] = {
     "params_percent": [1.0, 2.0, 5.0, 10.0],
     "loss": ["mse", "l1", "ssim"],
-    "lr": [1e-1, 1e-2, 1e-3],
+    "lr": [1e-1, 3e-2, 1e-2],
     "distance": ["l2", "mahalanobis"],
-    "cell_size": [8, 12, 16],
+    "cell_size": [8, 12],
     "knn_update_rate": [50, 100, 200, 500],
 }
 
@@ -137,9 +138,17 @@ def process_search_space(
             return
 
         print(f"Search Space {i}: {str(space)}")
+        out_path = Path(f"./hparams/{i}.json")
+
+        if out_path.exists():
+            print(f"Skipping space {i}")
+            continue
 
         search_config = SearchSpace(**dict(zip(SEARCH_SPACE, space)))
         statistics = train(train_config, search_config, dataset_path, device)
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
         output = {
             "hparams": asdict(search_config),
@@ -147,7 +156,7 @@ def process_search_space(
         }
         data = json.dumps(output, indent=4)
 
-        with open(f"./hparams/{i}", "w+") as f:
+        with open(out_path, "w+") as f:
             f.write(data)
 
 
