@@ -10,7 +10,8 @@ File layout::
         "config": dict,             # TrainingConfig as plain dict
         "split", "sample_id", "repetition", "seed",
         "model_args": dict,         # kwargs to rebuild GaussianIntensityField
-        "mask": uint8 tensor,       # label volume from OasisL2RDataset
+        "mask": bytes,              # zlib-compressed uint8 label volume from
+        "mask_shape": tuple,        # OasisL2RDataset; use load_result() to decode
         "intensity_min", "intensity_max": float,  # original range; the image is
                                     # min-max scaled to [0, 1] before training
         "epochs": {
@@ -32,6 +33,7 @@ import gc
 import json
 import math
 import time
+import zlib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -160,6 +162,23 @@ def save_atomic(obj: dict, path: Path) -> None:
     tmp_path.replace(path)
 
 
+def compress_mask(mask: torch.Tensor) -> tuple[bytes, tuple[int, ...]]:
+    """Losslessly compresses a uint8 label volume (~30x smaller for OASIS)."""
+    return zlib.compress(mask.to(torch.uint8).numpy().tobytes(), 6), tuple(mask.shape)
+
+
+def decompress_mask(data: bytes, shape: tuple[int, ...]) -> torch.Tensor:
+    return torch.frombuffer(bytearray(zlib.decompress(data)), dtype=torch.uint8).view(shape)
+
+
+def load_result(path: Path | str) -> dict:
+    """Loads a result file with the mask decoded to a uint8 tensor."""
+    result = torch.load(path, weights_only=False)
+    result["mask"] = decompress_mask(result["mask"], result.pop("mask_shape"))
+
+    return result
+
+
 def train_sample(
         config: TrainingConfig,
         image: torch.Tensor,
@@ -284,7 +303,7 @@ def process_config(config: TrainingConfig, device: torch.device) -> None:
             sample_dir.mkdir(parents=True, exist_ok=True)
 
             image = sample["image"].squeeze().unsqueeze(0).to(device)
-            mask = sample["label"].to(torch.uint8)
+            mask, mask_shape = compress_mask(sample["label"])
 
             for rep in range(config.repetitions):
                 out_file = sample_dir / f"{rep}.pt"
@@ -307,6 +326,7 @@ def process_config(config: TrainingConfig, device: torch.device) -> None:
                     "repetition": rep,
                     "seed": seed,
                     "mask": mask,
+                    "mask_shape": mask_shape,
                     "intensity_min": sample["info"]["intensity_min"],
                     "intensity_max": sample["info"]["intensity_max"],
                     "epochs": {},
