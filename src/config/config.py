@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from config.types import Split
@@ -40,3 +41,25 @@ class GSTrainingConfig(MetaConfig):
         0.9  # Percentage of total coordinates to supervise in minibatch
     )
     repetitions: int = 1
+
+
+@dataclass
+class TrainingConfig(MetaConfig):
+    """The training config for the gaussian splatting."""
+    dataset_path: Path = Path("/vol/miltank/projects/L2R/OASIS_L2R")
+    out_path: Path = Path("./data/out/run_x/")
+    epochs: list[int] = field(default_factory=list)  # Epochs at which a snapshot is saved
+    repetitions: int = 1
+    loss: Literal["l1", "mse", "ssim"] = "mse"
+    learning_rate: float = 1e-3
+    params: float = 1.0  # Gaussian parameters in percent of voxel count
+    knn_rate: int = 100  # Rebuild KNN every n epochs
+    cell_size: int = 12  # Voronoi cell spacing
+    distance: Literal["l2", "mahalanobis"] = "l2"
+    min_spatial_scale: float = 1.0
+    max_spatial_scale: float = 20.0
+    sample_prop: float = 0.1  # Fraction of voxels per batch
+    k: int = 24  # Neighbors per voxel in forward pass
+    k_candidates: int = 256
+    nprobe: int = 16
+    seed: int = 848577  # Repetition r uses seed + r
